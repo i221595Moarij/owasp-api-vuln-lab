@@ -2,6 +2,7 @@ package edu.nu.owaspapivulnlab.web;
 
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import edu.nu.owaspapivulnlab.model.AppUser;
 import edu.nu.owaspapivulnlab.repo.AppUserRepository;
@@ -19,33 +20,84 @@ public class UserController {
         this.users = users;
     }
 
-    // VULNERABILITY(API1: BOLA/IDOR) - no ownership check, any authenticated OR anonymous GET (due to SecurityConfig) can fetch any user
+    /**
+     * FIXED: Ownership enforced — user can only fetch their own info
+     * Vulnerability Fixed: API1 (BOLA/IDOR)
+     */
     @GetMapping("/{id}")
-    public AppUser get(@PathVariable Long id) {
-        return users.findById(id).orElseThrow(() -> new RuntimeException("User not found"));
+    public ResponseEntity<?> get(@PathVariable Long id, Authentication auth) {
+        AppUser currentUser = users.findByUsername(auth.getName())
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        // Ownership check
+        if (!currentUser.getId().equals(id)) {
+            return ResponseEntity.status(403).body(Map.of("error", "Access denied — not your user"));
+        }
+
+        AppUser user = users.findById(id).orElseThrow(() -> new RuntimeException("User not found"));
+        return ResponseEntity.ok(user);
     }
 
-    // VULNERABILITY(API6: Mass Assignment) - binds role/isAdmin from client
+    /**
+     * FIXED: Mass Assignment prevention — ignore sensitive fields like roles/admin
+     * Vulnerability Fixed: API6 (Mass Assignment)
+     */
     @PostMapping
-    public AppUser create(@Valid @RequestBody AppUser body) {
-        return users.save(body);
+    public ResponseEntity<?> create(@Valid @RequestBody AppUser body) {
+        // Force safe defaults for sensitive fields
+        body.setRole("USER"); // ignore any role sent by client
+        body.setAdmin(false);  // prevent client from assigning admin
+        AppUser saved = users.save(body);
+        return ResponseEntity.ok(saved);
     }
 
-    // VULNERABILITY(API9: Improper Inventory + API8 Injection style): naive 'search' that can be abused for enumeration
+    /**
+     * FIXED: Search endpoint restricted to prevent data enumeration
+     * Vulnerability Fixed: API9 (Improper Inventory / Injection-style enumeration)
+     */
     @GetMapping("/search")
-    public List<AppUser> search(@RequestParam String q) {
-        return users.search(q);
+    public ResponseEntity<?> search(@RequestParam String q, Authentication auth) {
+        // Only allow searching for own username or email
+        AppUser currentUser = users.findByUsername(auth.getName())
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        if (!currentUser.getUsername().contains(q)) {
+            return ResponseEntity.ok(List.of()); // empty result if query doesn't match self
+        }
+
+        return ResponseEntity.ok(List.of(currentUser));
     }
 
-    // VULNERABILITY(API3: Excessive Data Exposure) - returns all users including sensitive fields
+    /**
+     * FIXED: List all users removed for regular users (prevents excessive data exposure)
+     * Vulnerability Fixed: API3
+     */
     @GetMapping
-    public List<AppUser> list() {
-        return users.findAll();
+    public ResponseEntity<?> list(Authentication auth) {
+        AppUser currentUser = users.findByUsername(auth.getName())
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        // Only allow admin to list all users
+        if (!currentUser.isAdmin()) {
+            return ResponseEntity.status(403).body(Map.of("error", "Access denied — admin only"));
+        }
+
+        return ResponseEntity.ok(users.findAll());
     }
 
-    // VULNERABILITY(API5: Broken Function Level Authorization) - allows regular users to delete anyone
+    /**
+     * FIXED: Only admin or owner can delete account
+     * Vulnerability Fixed: API5 (Broken Function Level Authorization)
+     */
     @DeleteMapping("/{id}")
-    public ResponseEntity<?> delete(@PathVariable Long id) {
+    public ResponseEntity<?> delete(@PathVariable Long id, Authentication auth) {
+        AppUser currentUser = users.findByUsername(auth.getName())
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        if (!currentUser.isAdmin() && !currentUser.getId().equals(id)) {
+            return ResponseEntity.status(403).body(Map.of("error", "Access denied — cannot delete this user"));
+        }
+
         users.deleteById(id);
         Map<String, String> response = new HashMap<>();
         response.put("status", "deleted");
