@@ -17,12 +17,18 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.filter.OncePerRequestFilter;
 import io.jsonwebtoken.*;
+import io.github.bucket4j.Bucket;
+import io.github.bucket4j.Bucket4j;
+import io.github.bucket4j.Refill;
+import io.github.bucket4j.Bandwidth;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Collections;
 
 /**
- * SecurityConfig — Enforces authentication, JWT validation, and role-based access.
+ * SecurityConfig — Enforces authentication, JWT validation, role-based access,
+ * and adds rate limiting using Bucket4j.
  */
 @Configuration
 @EnableMethodSecurity // Enables @PreAuthorize annotations
@@ -55,6 +61,10 @@ public class SecurityConfig {
         // JWT filter
         http.addFilterBefore(new JwtFilter(secret),
                 org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class);
+
+        // Rate limiting filter
+        http.addFilterBefore(new RateLimitFilter(),
+                JwtFilter.class); // Apply rate limiting after JWT validation
 
         return http.build();
     }
@@ -101,6 +111,43 @@ public class SecurityConfig {
             }
 
             chain.doFilter(request, response);
+        }
+    }
+
+    /**
+     * RateLimitFilter — limits the number of requests per IP per minute
+     */
+    static class RateLimitFilter extends OncePerRequestFilter {
+
+        // Simple in-memory bucket (can be improved for distributed systems)
+        private final Bucket bucket;
+
+        public RateLimitFilter() {
+            // Allow 5 requests per minute for sensitive endpoints
+            Bandwidth limit = Bandwidth.classic(5, Refill.greedy(5, Duration.ofMinutes(1)));
+            this.bucket = Bucket4j.builder()
+                    .addLimit(limit)
+                    .build();
+        }
+
+        @Override
+        protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
+                throws ServletException, IOException {
+
+            String path = request.getRequestURI();
+
+            // Apply rate limiting only to sensitive endpoints
+            if (path.startsWith("/api/admin") || path.startsWith("/api/user") || path.startsWith("/api/account")) {
+                if (bucket.tryConsume(1)) {
+                    chain.doFilter(request, response);
+                } else {
+                    response.setStatus(429); // HTTP 429 Too Many Requests
+                    response.getWriter().write("Too many requests - try again later.");
+                    return;
+                }
+            } else {
+                chain.doFilter(request, response);
+            }
         }
     }
 }
