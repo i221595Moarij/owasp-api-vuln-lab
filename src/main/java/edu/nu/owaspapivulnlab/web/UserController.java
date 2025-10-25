@@ -20,15 +20,17 @@ import java.util.stream.Collectors;
 
 /**
  * UserController — user management endpoints
- * 
- * Added rate limiting to prevent abuse of sensitive user operations.
+ *
+ * Added:
+ * 1. Rate limiting using Bucket4j.
+ * 2. Ownership checks for sensitive user operations.
+ * 3. Mass Assignment prevention via DTOs.
  */
 @RestController
 @RequestMapping("/api/users")
 public class UserController {
     private final AppUserRepository users;
 
-    // ✅ In-memory bucket: limit 5 requests per minute for user-sensitive endpoints
     private final Bucket bucket;
 
     public UserController(AppUserRepository users) {
@@ -41,8 +43,6 @@ public class UserController {
 
     /**
      * Enforced ownership — user can only fetch their own info
-     * Vulnerability Fixed: API1 (BOLA/IDOR)
-     * Rate limiting applied (max 5 requests/minute)
      */
     @GetMapping("/{id}")
     public ResponseEntity<?> get(@PathVariable Long id, Authentication auth) {
@@ -59,32 +59,32 @@ public class UserController {
         }
 
         AppUser user = users.findById(id).orElseThrow(() -> new RuntimeException("User not found"));
-        AppUserDTO dto = user.toDTO();
-        return ResponseEntity.ok(dto);
+        return ResponseEntity.ok(user.toDTO());
     }
 
     /**
-     * Mass Assignment prevention — ignore sensitive fields like roles/admin
-     * Vulnerability Fixed: API6 (Mass Assignment)
-     * Rate limiting applied (max 5 requests/minute)
+     * Mass Assignment prevention — only allows safe fields via CreateUserDTO
      */
     @PostMapping
-    public ResponseEntity<?> create(@Valid @RequestBody AppUser body) {
+    public ResponseEntity<?> create(@Valid @RequestBody CreateUserDTO body) {
 
         if (!bucket.tryConsume(1)) {
             return ResponseEntity.status(429).body(Map.of("error", "Too many requests — try again later"));
         }
 
-        body.setRole("USER"); 
-        body.setAdmin(false); 
-        AppUser saved = users.save(body);
+        // Only allowed fields are copied from DTO
+        AppUser newUser = new AppUser();
+        newUser.setUsername(body.getUsername());
+        newUser.setPassword(body.getPassword()); // assume password is hashed in service or entity
+        newUser.setRole("USER");  // explicitly set, cannot be overridden
+        newUser.setAdmin(false);  // explicitly set, cannot be overridden
+
+        AppUser saved = users.save(newUser);
         return ResponseEntity.ok(saved.toDTO());
     }
 
     /**
      * Search endpoint restricted to prevent data enumeration
-     * Vulnerability Fixed: API9
-     * Rate limiting applied (max 5 requests/minute)
      */
     @GetMapping("/search")
     public ResponseEntity<?> search(@RequestParam String q, Authentication auth) {
@@ -106,8 +106,6 @@ public class UserController {
 
     /**
      * List all users removed for regular users (prevents excessive data exposure)
-     * Vulnerability Fixed: API3
-     * Rate limiting applied (max 5 requests/minute)
      */
     @GetMapping
     public ResponseEntity<?> list(Authentication auth) {
@@ -133,8 +131,6 @@ public class UserController {
 
     /**
      * Only admin or owner can delete account
-     * Vulnerability Fixed: API5
-     * Rate limiting applied (max 5 requests/minute)
      */
     @DeleteMapping("/{id}")
     public ResponseEntity<?> delete(@PathVariable Long id, Authentication auth) {
@@ -154,5 +150,26 @@ public class UserController {
         Map<String, String> response = new HashMap<>();
         response.put("status", "deleted");
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * DTO for creating users — prevents mass assignment
+     */
+    public static class CreateUserDTO {
+        private String username;
+        private String password;
+
+        public String getUsername() {
+            return username;
+        }
+        public void setUsername(String username) {
+            this.username = username;
+        }
+        public String getPassword() {
+            return password;
+        }
+        public void setPassword(String password) {
+            this.password = password;
+        }
     }
 }

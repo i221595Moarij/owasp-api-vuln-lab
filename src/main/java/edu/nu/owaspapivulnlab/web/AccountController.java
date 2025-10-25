@@ -21,7 +21,10 @@ import java.util.stream.Collectors;
 /**
  * AccountController — account management endpoints
  * 
- * Added rate limiting to prevent abuse of sensitive account operations.
+ * Added:
+ * 1. Rate limiting using Bucket4j.
+ * 2. Ownership checks for account operations.
+ * 3. **Mass Assignment prevention**: only allows client to send allowed fields in requests.
  */
 @RestController
 @RequestMapping("/api/accounts")
@@ -30,7 +33,6 @@ public class AccountController {
     private final AccountRepository accounts;
     private final AppUserRepository users;
 
-    // ✅ In-memory bucket: limit 5 requests per minute for account-sensitive endpoints
     private final Bucket bucket;
 
     public AccountController(AccountRepository accounts, AppUserRepository users) {
@@ -44,9 +46,7 @@ public class AccountController {
     }
 
     /**
-     * Enforced Ownership — user can only view their own account balance.
-     * Vulnerability Fixed: Broken Object Level Authorization (BOLA / API1)
-     * Rate limiting applied (max 5 requests/minute)
+     * Get balance for an account (ownership enforced)
      */
     @GetMapping("/{id}/balance")
     public ResponseEntity<?> balance(@PathVariable Long id, Authentication auth) {
@@ -65,19 +65,19 @@ public class AccountController {
             return ResponseEntity.status(403).body(Map.of("error", "Access denied — not your account"));
         }
 
-        AccountDTO dto = account.toDTO();
-        return ResponseEntity.ok(dto);
+        return ResponseEntity.ok(account.toDTO());
     }
 
     /**
-     * Added ownership check before allowing transfer.
-     * Vulnerabilities Fixed:
-     * - API1: Broken Object Level Authorization
-     * - API5: Broken Function Level Authorization (ownership)
-     * Rate limiting applied (max 5 requests/minute)
+     * Transfer amount from an account (ownership enforced)
+     * Mass Assignment Prevention:
+     * - We only accept 'amount' as input
+     * - Sensitive fields like balance, role, or ownerUserId cannot be modified via request
      */
     @PostMapping("/{id}/transfer")
-    public ResponseEntity<?> transfer(@PathVariable Long id, @RequestParam Double amount, Authentication auth) {
+    public ResponseEntity<?> transfer(@PathVariable Long id,
+                                      @RequestBody TransferRequestDTO transferRequest,
+                                      Authentication auth) {
 
         if (!bucket.tryConsume(1)) {
             return ResponseEntity.status(429).body(Map.of("error", "Too many requests — try again later"));
@@ -93,21 +93,19 @@ public class AccountController {
             return ResponseEntity.status(403).body(Map.of("error", "Access denied — not your account"));
         }
 
-        if (account.getBalance() < amount) {
+        if (account.getBalance() < transferRequest.getAmount()) {
             return ResponseEntity.badRequest().body(Map.of("error", "Insufficient balance"));
         }
 
-        account.setBalance(account.getBalance() - amount);
+        // Update balance safely, no mass assignment
+        account.setBalance(account.getBalance() - transferRequest.getAmount());
         accounts.save(account);
 
-        AccountDTO dto = account.toDTO();
-        return ResponseEntity.ok(Map.of("status", "ok", "account", dto));
+        return ResponseEntity.ok(Map.of("status", "ok", "account", account.toDTO()));
     }
 
     /**
      * Returns all accounts of the logged-in user as DTOs.
-     * FIX: Prevents excessive data exposure (API3)
-     * Rate limiting applied (max 5 requests/minute)
      */
     @GetMapping("/mine")
     public ResponseEntity<?> mine(Authentication auth) {
@@ -125,5 +123,21 @@ public class AccountController {
                 .collect(Collectors.toList());
 
         return ResponseEntity.ok(myAccounts);
+    }
+
+    /**
+     * DTO class for transfer requests
+     * Only allows 'amount' to be set by client — prevents mass assignment
+     */
+    public static class TransferRequestDTO {
+        private Double amount;
+
+        public Double getAmount() {
+            return amount;
+        }
+
+        public void setAmount(Double amount) {
+            this.amount = amount;
+        }
     }
 }
