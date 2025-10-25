@@ -7,7 +7,6 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -23,20 +22,19 @@ import java.io.IOException;
 import java.util.Collections;
 
 /**
- * SecurityConfig — Updated to enforce strict authentication and role-based access control.
+ * SecurityConfig — Enforces authentication, JWT validation, and role-based access.
  */
 @Configuration
-@EnableMethodSecurity // ✅ Enables @PreAuthorize annotations for controllers
+@EnableMethodSecurity // Enables @PreAuthorize annotations
 public class SecurityConfig {
 
-    private final BCryptPasswordEncoder passwordEncoder;
-    private final String secret;
+    @Value("${app.jwt.secret}")
+    private String secret;
 
-    // ✅ Constructor injection for encoder and secret key
-    public SecurityConfig(BCryptPasswordEncoder passwordEncoder,
-                          @Value("${app.jwt.secret}") String secret) {
-        this.passwordEncoder = passwordEncoder;
-        this.secret = secret;
+    // ✅ BCryptPasswordEncoder bean
+    @Bean
+    public BCryptPasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
     }
 
     @Bean
@@ -44,17 +42,17 @@ public class SecurityConfig {
         http.csrf(csrf -> csrf.disable());
         http.sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
 
-        // ✅ Only authentication endpoints are public
+        // Endpoint security
         http.authorizeHttpRequests(reg -> reg
-                .requestMatchers("/api/auth/**", "/h2-console/**").permitAll() // Allow signup/login & H2
-                .requestMatchers("/api/admin/**").hasRole("ADMIN")              // Only ADMIN can access admin APIs
-                .requestMatchers("/api/user/**").hasRole("USER")                // Only USER can access user APIs
-                .anyRequest().authenticated()                                   // All others must be authenticated
+                .requestMatchers("/api/auth/**", "/h2-console/**").permitAll() // signup/login & H2 console
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")              // ADMIN-only
+                .requestMatchers("/api/user/**").hasRole("USER")                // USER-only
+                .anyRequest().authenticated()                                   // all others require auth
         );
 
-        http.headers(h -> h.frameOptions(f -> f.disable())); // For H2 console only
+        http.headers(h -> h.frameOptions(f -> f.disable())); // For H2 console
 
-        // ✅ Add JWT filter for validating tokens
+        // JWT filter
         http.addFilterBefore(new JwtFilter(secret),
                 org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class);
 
@@ -62,15 +60,19 @@ public class SecurityConfig {
     }
 
     /**
-     * Custom JWT Filter — validates JWT and sets SecurityContext.
+     * JWT Filter — validates token and sets SecurityContext
      */
     static class JwtFilter extends OncePerRequestFilter {
         private final String secret;
-        JwtFilter(String secret) { this.secret = secret; }
+
+        JwtFilter(String secret) {
+            this.secret = secret;
+        }
 
         @Override
         protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
                 throws ServletException, IOException {
+
             String auth = request.getHeader("Authorization");
             if (auth != null && auth.startsWith("Bearer ")) {
                 String token = auth.substring(7);
@@ -94,9 +96,10 @@ public class SecurityConfig {
                         SecurityContextHolder.getContext().setAuthentication(authToken);
                     }
                 } catch (JwtException e) {
-                    // Token invalid or expired — silently continue (request will fail auth)
+                    // Invalid or expired token — request will fail authentication
                 }
             }
+
             chain.doFilter(request, response);
         }
     }
