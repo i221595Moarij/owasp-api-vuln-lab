@@ -9,10 +9,12 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.filter.OncePerRequestFilter;
 import io.jsonwebtoken.*;
@@ -20,33 +22,48 @@ import io.jsonwebtoken.*;
 import java.io.IOException;
 import java.util.Collections;
 
+/**
+ * SecurityConfig — Updated to enforce strict authentication and role-based access control.
+ */
 @Configuration
+@EnableMethodSecurity // ✅ Enables @PreAuthorize annotations for controllers
 public class SecurityConfig {
 
-    @Value("${app.jwt.secret}")
-    private String secret;
+    private final BCryptPasswordEncoder passwordEncoder;
+    private final String secret;
 
-    // VULNERABILITY(API7 Security Misconfiguration): overly permissive CORS/CSRF and antMatchers order
+    // ✅ Constructor injection for encoder and secret key
+    public SecurityConfig(BCryptPasswordEncoder passwordEncoder,
+                          @Value("${app.jwt.secret}") String secret) {
+        this.passwordEncoder = passwordEncoder;
+        this.secret = secret;
+    }
+
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
-        http.csrf(csrf -> csrf.disable()); // APIs typically stateless; but add CSRF for state-changing in real apps
+        http.csrf(csrf -> csrf.disable());
         http.sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
 
+        // ✅ Only authentication endpoints are public
         http.authorizeHttpRequests(reg -> reg
-                .requestMatchers("/api/auth/**", "/h2-console/**").permitAll()
-                // VULNERABILITY: broad permitAll on GET allows data scraping (API1/2 depending on context)
-                .requestMatchers(HttpMethod.GET, "/api/**").permitAll()
-                .requestMatchers("/api/admin/**").hasRole("ADMIN")
-                .anyRequest().authenticated()
+                .requestMatchers("/api/auth/**", "/h2-console/**").permitAll() // Allow signup/login & H2
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")              // Only ADMIN can access admin APIs
+                .requestMatchers("/api/user/**").hasRole("USER")                // Only USER can access user APIs
+                .anyRequest().authenticated()                                   // All others must be authenticated
         );
 
-        http.headers(h -> h.frameOptions(f -> f.disable())); // allow H2 console
+        http.headers(h -> h.frameOptions(f -> f.disable())); // For H2 console only
 
-        http.addFilterBefore(new JwtFilter(secret), org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class);
+        // ✅ Add JWT filter for validating tokens
+        http.addFilterBefore(new JwtFilter(secret),
+                org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class);
+
         return http.build();
     }
 
-    // Minimal JWT filter (VULNERABILITY: weak validation - no audience, issuer checks; long TTL)
+    /**
+     * Custom JWT Filter — validates JWT and sets SecurityContext.
+     */
     static class JwtFilter extends OncePerRequestFilter {
         private final String secret;
         JwtFilter(String secret) { this.secret = secret; }
@@ -58,15 +75,26 @@ public class SecurityConfig {
             if (auth != null && auth.startsWith("Bearer ")) {
                 String token = auth.substring(7);
                 try {
-                    Claims c = Jwts.parserBuilder().setSigningKey(secret.getBytes()).build()
-                            .parseClaimsJws(token).getBody();
-                    String user = c.getSubject();
-                    String role = (String) c.get("role");
-                    UsernamePasswordAuthenticationToken authn = new UsernamePasswordAuthenticationToken(user, null,
-                            role != null ? Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + role)) : Collections.emptyList());
-                    SecurityContextHolder.getContext().setAuthentication(authn);
+                    Claims claims = Jwts.parserBuilder()
+                            .setSigningKey(secret.getBytes())
+                            .build()
+                            .parseClaimsJws(token)
+                            .getBody();
+
+                    String user = claims.getSubject();
+                    String role = (String) claims.get("role");
+
+                    if (user != null && role != null) {
+                        UsernamePasswordAuthenticationToken authToken =
+                                new UsernamePasswordAuthenticationToken(
+                                        user,
+                                        null,
+                                        Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + role))
+                                );
+                        SecurityContextHolder.getContext().setAuthentication(authToken);
+                    }
                 } catch (JwtException e) {
-                    // VULNERABILITY: swallow errors; continue as anonymous (API7)
+                    // Token invalid or expired — silently continue (request will fail auth)
                 }
             }
             chain.doFilter(request, response);
