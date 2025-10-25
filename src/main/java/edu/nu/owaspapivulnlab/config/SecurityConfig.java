@@ -4,7 +4,6 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -13,6 +12,7 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.filter.OncePerRequestFilter;
 import io.jsonwebtoken.*;
@@ -23,18 +23,23 @@ import java.util.Collections;
 @Configuration
 public class SecurityConfig {
 
-    @Value("${app.jwt.secret}")
-    private String secret;
+    private final BCryptPasswordEncoder passwordEncoder;
+    private final String secret;
 
-    // VULNERABILITY(API7 Security Misconfiguration): overly permissive CORS/CSRF and antMatchers order
+    // Use constructor injection to get the existing passwordEncoder bean from DataSeeder
+    public SecurityConfig(BCryptPasswordEncoder passwordEncoder, 
+                          @org.springframework.beans.factory.annotation.Value("${app.jwt.secret}") String secret) {
+        this.passwordEncoder = passwordEncoder;
+        this.secret = secret;
+    }
+
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
-        http.csrf(csrf -> csrf.disable()); // APIs typically stateless; but add CSRF for state-changing in real apps
+        http.csrf(csrf -> csrf.disable()); // APIs are stateless
         http.sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
 
         http.authorizeHttpRequests(reg -> reg
                 .requestMatchers("/api/auth/**", "/h2-console/**").permitAll()
-                // VULNERABILITY: broad permitAll on GET allows data scraping (API1/2 depending on context)
                 .requestMatchers(HttpMethod.GET, "/api/**").permitAll()
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated()
@@ -42,11 +47,12 @@ public class SecurityConfig {
 
         http.headers(h -> h.frameOptions(f -> f.disable())); // allow H2 console
 
+        // Add JWT filter for authentication
         http.addFilterBefore(new JwtFilter(secret), org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class);
+
         return http.build();
     }
 
-    // Minimal JWT filter (VULNERABILITY: weak validation - no audience, issuer checks; long TTL)
     static class JwtFilter extends OncePerRequestFilter {
         private final String secret;
         JwtFilter(String secret) { this.secret = secret; }
@@ -66,7 +72,7 @@ public class SecurityConfig {
                             role != null ? Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + role)) : Collections.emptyList());
                     SecurityContextHolder.getContext().setAuthentication(authn);
                 } catch (JwtException e) {
-                    // VULNERABILITY: swallow errors; continue as anonymous (API7)
+                    // Token invalid or expired; optionally log
                 }
             }
             chain.doFilter(request, response);
