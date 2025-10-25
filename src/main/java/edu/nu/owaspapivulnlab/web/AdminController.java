@@ -1,5 +1,6 @@
 package edu.nu.owaspapivulnlab.web;
 
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -13,7 +14,11 @@ import java.util.Map;
 @RequestMapping("/api/admin")
 public class AdminController {
 
-    // VULNERABILITY(API7: Security Misconfiguration) - may be exposed via incorrect matcher order
+    /**
+     * FIX: Only ADMIN can access metrics
+     * Vulnerability Fixed: API7 (Security Misconfiguration)
+     */
+    @PreAuthorize("hasRole('ADMIN')")
     @GetMapping("/metrics")
     public Map<String, Object> metrics() {
         RuntimeMXBean rt = ManagementFactory.getRuntimeMXBean();

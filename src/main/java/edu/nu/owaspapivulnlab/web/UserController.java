@@ -5,11 +5,13 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import edu.nu.owaspapivulnlab.model.AppUser;
+import edu.nu.owaspapivulnlab.model.AppUserDTO;
 import edu.nu.owaspapivulnlab.repo.AppUserRepository;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/users")
@@ -21,7 +23,7 @@ public class UserController {
     }
 
     /**
-     * FIXED: Ownership enforced — user can only fetch their own info
+     * Enforced ownership — user can only fetch their own info
      * Vulnerability Fixed: API1 (BOLA/IDOR)
      */
     @GetMapping("/{id}")
@@ -35,29 +37,31 @@ public class UserController {
         }
 
         AppUser user = users.findById(id).orElseThrow(() -> new RuntimeException("User not found"));
-        return ResponseEntity.ok(user);
+        AppUserDTO dto = user.toDTO(); // Convert to DTO to hide sensitive fields
+        return ResponseEntity.ok(dto);
     }
 
     /**
-     * FIXED: Mass Assignment prevention — ignore sensitive fields like roles/admin
+     * Mass Assignment prevention — ignore sensitive fields like roles/admin
      * Vulnerability Fixed: API6 (Mass Assignment)
      */
     @PostMapping
     public ResponseEntity<?> create(@Valid @RequestBody AppUser body) {
         // Force safe defaults for sensitive fields
-        body.setRole("USER"); // ignore any role sent by client
-        body.setAdmin(false);  // prevent client from assigning admin
+        body.setRole("USER"); 
+        body.setAdmin(false); 
         AppUser saved = users.save(body);
-        return ResponseEntity.ok(saved);
+
+        // Return as DTO to avoid exposing password/role/admin
+        return ResponseEntity.ok(saved.toDTO());
     }
 
     /**
-     * FIXED: Search endpoint restricted to prevent data enumeration
-     * Vulnerability Fixed: API9 (Improper Inventory / Injection-style enumeration)
+     * Search endpoint restricted to prevent data enumeration
+     * Vulnerability Fixed: API9
      */
     @GetMapping("/search")
     public ResponseEntity<?> search(@RequestParam String q, Authentication auth) {
-        // Only allow searching for own username or email
         AppUser currentUser = users.findByUsername(auth.getName())
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
@@ -65,11 +69,13 @@ public class UserController {
             return ResponseEntity.ok(List.of()); // empty result if query doesn't match self
         }
 
-        return ResponseEntity.ok(List.of(currentUser));
+        // Return as DTO
+        List<AppUserDTO> result = List.of(currentUser.toDTO());
+        return ResponseEntity.ok(result);
     }
 
     /**
-     * FIXED: List all users removed for regular users (prevents excessive data exposure)
+     * List all users removed for regular users (prevents excessive data exposure)
      * Vulnerability Fixed: API3
      */
     @GetMapping
@@ -77,17 +83,22 @@ public class UserController {
         AppUser currentUser = users.findByUsername(auth.getName())
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
-        // Only allow admin to list all users
         if (!currentUser.isAdmin()) {
             return ResponseEntity.status(403).body(Map.of("error", "Access denied — admin only"));
         }
 
-        return ResponseEntity.ok(users.findAll());
+        // Return all users as DTOs
+        List<AppUserDTO> allUsers = users.findAll()
+                .stream()
+                .map(AppUser::toDTO)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(allUsers);
     }
 
     /**
-     * FIXED: Only admin or owner can delete account
-     * Vulnerability Fixed: API5 (Broken Function Level Authorization)
+     * Only admin or owner can delete account
+     * Vulnerability Fixed: API5
      */
     @DeleteMapping("/{id}")
     public ResponseEntity<?> delete(@PathVariable Long id, Authentication auth) {
