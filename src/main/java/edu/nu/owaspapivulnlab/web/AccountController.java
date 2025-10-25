@@ -24,7 +24,8 @@ import java.util.stream.Collectors;
  * Added:
  * 1. Rate limiting using Bucket4j.
  * 2. Ownership checks for account operations.
- * 3. **Mass Assignment prevention**: only allows client to send allowed fields in requests.
+ * 3. Mass Assignment prevention.
+ * 4. ✅ Input validation to reject negative or huge transfers.
  */
 @RestController
 @RequestMapping("/api/accounts")
@@ -70,9 +71,9 @@ public class AccountController {
 
     /**
      * Transfer amount from an account (ownership enforced)
-     * Mass Assignment Prevention:
-     * - We only accept 'amount' as input
-     * - Sensitive fields like balance, role, or ownerUserId cannot be modified via request
+     * 
+     * Fixes added:
+     * ✅ Validate transfer input — reject negative, zero, or excessively large values.
      */
     @PostMapping("/{id}/transfer")
     public ResponseEntity<?> transfer(@PathVariable Long id,
@@ -93,12 +94,24 @@ public class AccountController {
             return ResponseEntity.status(403).body(Map.of("error", "Access denied — not your account"));
         }
 
-        if (account.getBalance() < transferRequest.getAmount()) {
+        Double amount = transferRequest.getAmount();
+
+        // ✅ Input validation added for Task 9
+        if (amount == null || amount <= 0) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Invalid amount — must be positive"));
+        }
+
+        // ✅ Reject unreasonably large transfers (e.g., > 1,000,000)
+        if (amount > 1_000_000) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Transfer amount too large"));
+        }
+
+        if (account.getBalance() < amount) {
             return ResponseEntity.badRequest().body(Map.of("error", "Insufficient balance"));
         }
 
         // Update balance safely, no mass assignment
-        account.setBalance(account.getBalance() - transferRequest.getAmount());
+        account.setBalance(account.getBalance() - amount);
         accounts.save(account);
 
         return ResponseEntity.ok(Map.of("status", "ok", "account", account.toDTO()));
